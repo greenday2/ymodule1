@@ -1,8 +1,8 @@
 ## Module one project work.
 
-Parse bank transaction files in multiple formats.  
-Supported formats: bin, txt, csv.  
-See specs/ for format descriptions and examples.  
+Parse bank transaction files in multiple formats.
+Supported formats: bin, txt, csv.
+See specs/ for format descriptions and examples.
 
 ## Utilities:
 
@@ -14,7 +14,7 @@ Example of using
 cat file1.csv > converter --dest-format txt
 ```
 
-Use ` converter --help ` or just ` converter ` for more information.
+Use ` converter --help ` for more information.
 
 
 ### comparer - Parse and compare two bank transaction files.
@@ -25,4 +25,4 @@ Example of using
 comparer file1.txt file2.bin
 ```
 
-Use ` comparer --help ` or just ` comparer ` for more information.
+Use ` comparer --help ` for more information.

@@ -1,37 +1,57 @@
-use std::collections::{HashMap, HashSet};
 use std::env;
 
-pub type ArgsMap = HashMap<String, Option<String>>;
+use parser::error::{Error, Result};
 
-pub fn parse_command_line_args() -> Result<ArgsMap, String> {
-    let possible_args = HashSet::<&str>::from_iter(["--help", "--in", "--out", "--dest-format"]);
-    let mut collected_args: ArgsMap = HashMap::new();
+#[derive(Debug, Default, Clone)]
+pub struct CliArgs {
+    pub output_format: String,
+    pub input_file: Option<String>,
+    pub output_file: Option<String>,
+    pub help: bool,
+}
 
-    let mut args = env::args().skip(1).peekable(); // skip program name
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--in" | "--out" | "--dest-format" => {
-                let arg_needs_value = || format!("Argument {} needs value", arg);
-                if let Some(v) = args.next() {
-                    if !possible_args.contains(v.as_str()) {
-                        collected_args.insert(arg, Some(v));
+impl CliArgs {
+    pub fn parse() -> Result<Self> {
+        let mut cli_args = CliArgs::default();
+        let mut args = env::args().skip(1).peekable(); // skip program name
+        let arg_requires_value = |arg| format!("Argument {} requires a value", arg);
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--in" | "--out" | "--dest-format" => {
+                    if let Some(v) = args.next() {
+                        if !v.starts_with("--") {
+                            if arg == "--in" {
+                                cli_args.input_file = Some(v)
+                            } else if arg == "--out" {
+                                cli_args.output_file = Some(v)
+                            } else if arg == "--dest-format" {
+                                cli_args.output_format = v
+                            }
+                        } else {
+                            return Err(Error::MissingArgument(arg_requires_value(arg)));
+                        }
                     } else {
-                        return Err(arg_needs_value());
-                    }
-                } else {
-                    return Err(arg_needs_value());
-                };
-            }
-            "--help" => {
-                collected_args.insert(arg, None);
-            }
-            _ => {
-                return Err(format!("Unknow argument: {}", arg));
+                        return Err(Error::MissingArgument(arg_requires_value(arg)));
+                    };
+                }
+                "--help" => {
+                    cli_args.help = true;
+                }
+                _ => {
+                    return Err(Error::UnknownArgument(format!("Unknow argument: {}", arg)));
+                }
             }
         }
-    }
 
-    Ok(collected_args)
+        if !cli_args.help && cli_args.output_format.is_empty() {
+            return Err(Error::MissingArgument(
+                "--dest-format is required".to_string(),
+            ));
+        }
+
+        Ok(cli_args)
+    }
 }
 
 pub fn print_help() {
@@ -49,7 +69,7 @@ Usage: converer OPTIONS
 
     Examples:
       converter --in file1.csv --dest-format txt
-      cat file.txt | converter --out file1.csv --dest-format bin
+      cat file.txt | converter --out file1.bin --dest-format bin
     "#
     );
 }
