@@ -1,6 +1,6 @@
 use std::env;
 
-use parser::error::{Error, Result};
+use parser::{Error, Result};
 
 #[derive(Debug, Default, Clone)]
 pub struct CliArgs {

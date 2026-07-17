@@ -1,27 +1,34 @@
+use std::io;
+
 mod bin_parser;
 mod csv_parser;
 mod transaction;
 mod txt_parser;
 
-pub use bin_parser::BinParser;
-pub use csv_parser::CsvParser;
-pub use txt_parser::TxtParser;
+use bin_parser::BinParser;
+use bin_parser::BinSerializer;
 
-use crate::error::{Error, Result};
-use std::io;
-use transaction::Transaction;
+use csv_parser::CsvParser;
+use csv_parser::CsvSerializer;
 
-pub trait TransactionReader {
+use txt_parser::TxtParser;
+use txt_parser::TxtSerializer;
+
+pub use transaction::Transaction;
+
+use crate::{Error, Result};
+
+pub trait TransactionParser {
     type Iter: Iterator<Item = Result<Transaction>>;
 
-    fn read_transactions<R: io::Read + 'static>(&self, reader: R) -> Result<Self::Iter>;
+    fn parse(&self, reader: Box<dyn io::BufRead>) -> Result<Self::Iter>;
 }
 
-pub trait TransactionWriter {
-    fn write_transactions<W: io::Write, I: Iterator<Item = Result<Transaction>>>(
+pub trait TransactionSerializer {
+    fn serialize(
         &self,
-        writer: W,
-        transactions: I,
+        writer: &mut dyn io::Write,
+        transactions: &mut dyn Iterator<Item = Result<Transaction>>,
     ) -> Result<()>;
 }
 
@@ -29,7 +36,6 @@ pub trait FormatDetector {
     fn detect(buffer: &[u8]) -> bool;
 }
 
-#[derive(PartialEq)]
 pub enum Format {
     Csv,
     Txt,
@@ -37,10 +43,10 @@ pub enum Format {
 }
 
 impl Format {
-    pub fn detect_from_content<R: io::BufRead>(reader: &mut R) -> Result<Self> {
-        let buffer = reader
-            .fill_buf()
-            .map_err(|e| Error::make_io_error(e, "Failed to read for format detection"))?;
+    pub fn detect_from_content(reader: &mut dyn io::BufRead) -> Result<Self> {
+        let buffer = reader.fill_buf().map_err(|e| {
+            Error::make_sys_error(Box::new(e), "Failed to read for format detection")
+        })?;
 
         if BinParser::detect(buffer) {
             Ok(Format::Bin)
@@ -57,88 +63,68 @@ impl Format {
 
     pub fn from_str(format_name: &str) -> Result<Self> {
         match format_name {
+            "bin" => Ok(Format::Bin),
             "csv" => Ok(Format::Csv),
             "txt" => Ok(Format::Txt),
-            "bin" => Ok(Format::Bin),
             _ => Err(Error::InvalidFormat(format!(
                 "Unknown format: {}. Supported txt, bin, csv.",
                 format_name
             ))),
         }
     }
-
-    pub fn the_same_formats(in_fmt: &Format, out_fmt: &Format) -> Result<()> {
-        if in_fmt != out_fmt {
-            Ok(())
-        } else {
-            Err(Error::InvalidFormat(format!(
-                "Both Input and Output formats are the Same. \
-                \nTell me dr.Freeman, Why Should I engage in useless work?"
-            )))
-        }
-    }
 }
 
-pub enum Reader {
+pub enum Parser {
+    Bin(BinParser),
     Csv(CsvParser),
     Txt(TxtParser),
-    Bin(BinParser),
 }
 
-impl Reader {
-    pub fn read_transactions<R: io::Read + 'static>(
+impl Parser {
+    pub fn parse(
         &self,
-        reader: R,
+        reader: Box<dyn io::BufRead>,
     ) -> Result<Box<dyn Iterator<Item = Result<Transaction>>>> {
         match self {
-            Reader::Csv(parser) => {
-                let iter = parser.read_transactions(reader)?;
-                Ok(Box::new(iter))
-            }
-            Reader::Txt(parser) => {
-                let iter = parser.read_transactions(reader)?;
-                Ok(Box::new(iter))
-            }
-            Reader::Bin(parser) => {
-                let iter = parser.read_transactions(reader)?;
-                Ok(Box::new(iter))
-            }
+            Parser::Bin(parser) => Ok(Box::new(parser.parse(reader)?)),
+            Parser::Csv(parser) => Ok(Box::new(parser.parse(reader)?)),
+            Parser::Txt(parser) => Ok(Box::new(parser.parse(reader)?)),
         }
     }
 }
 
-pub enum Writer {
-    Csv(CsvParser),
-    Txt(TxtParser),
-    Bin(BinParser),
+pub fn get_parser(fmt: Format) -> Parser {
+    match fmt {
+        Format::Bin => Parser::Bin(BinParser),
+        Format::Csv => Parser::Csv(CsvParser),
+        Format::Txt => Parser::Txt(TxtParser),
+    }
 }
 
-impl Writer {
-    pub fn write_transactions<W: io::Write, I: Iterator<Item = Result<Transaction>>>(
+pub enum Serializer {
+    Bin(BinSerializer),
+    Csv(CsvSerializer),
+    Txt(TxtSerializer),
+}
+
+impl Serializer {
+    pub fn serialize(
         &self,
-        writer: W,
-        transactions: I,
+        writer: &mut dyn io::Write,
+        transactions: &mut dyn Iterator<Item = Result<Transaction>>,
     ) -> Result<()> {
         match self {
-            Writer::Csv(parser) => parser.write_transactions(writer, transactions),
-            Writer::Txt(parser) => parser.write_transactions(writer, transactions),
-            Writer::Bin(parser) => parser.write_transactions(writer, transactions),
+            Serializer::Bin(serializer) => serializer.serialize(writer, transactions),
+            Serializer::Csv(serializer) => serializer.serialize(writer, transactions),
+            Serializer::Txt(serializer) => serializer.serialize(writer, transactions),
         }
     }
 }
 
-pub fn get_reader(format: Format) -> Reader {
-    match format {
-        Format::Csv => Reader::Csv(CsvParser),
-        Format::Txt => Reader::Txt(TxtParser),
-        Format::Bin => Reader::Bin(BinParser),
-    }
-}
-
-pub fn get_writer(format: Format) -> Writer {
-    match format {
-        Format::Csv => Writer::Csv(CsvParser),
-        Format::Txt => Writer::Txt(TxtParser),
-        Format::Bin => Writer::Bin(BinParser),
+pub fn get_serializer(fmt: Format) -> Serializer {
+    match fmt {
+        Format::Bin => Serializer::Bin(BinSerializer),
+        Format::Csv => Serializer::Csv(CsvSerializer),
+        Format::Txt => Serializer::Txt(TxtSerializer),
     }
 }
