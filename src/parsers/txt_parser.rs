@@ -112,11 +112,19 @@ impl TxtIterator {
         ))
     }
 
-    fn parse_line(&mut self, line: &str) {
+    fn parse_line(&mut self, line: &str) -> Result<()> {
         if let Some((fld_name, fld_value)) = line.split_once(':') {
+            let fld_name = fld_name.trim().to_string();
+            if self.current_record.contains_key(&fld_name) {
+                return Err(Error::ParseError(format!(
+                    "Duplicate field '{}'",
+                    fld_name
+                )));
+            }
             self.current_record
-                .insert(fld_name.trim().to_string(), fld_value.trim().to_string());
+                .insert(fld_name, fld_value.trim().to_string());
         }
+        Ok(())
     }
 }
 
@@ -144,15 +152,27 @@ impl Iterator for TxtIterator {
                                     continue;
                                 }
 
-                                self.parse_line(line.as_str());
+                                if let Err(e) = self.parse_line(line.as_str()) {
+                                    self.state = State::Finish;
+                                    break Some(Err(e));
+                                }
                             }
                         }
                     } else {
+                        // EOF: emit pending record if any, otherwise finish cleanly
                         self.state = State::Finish;
+                        if self.current_record.is_empty() {
+                            break None;
+                        }
                         break Some(self.make_transaction());
                     }
                 }
                 State::Save => {
+                    // Blank lines with no accumulated fields are separators / trailing noise
+                    if self.current_record.is_empty() {
+                        self.state = State::Collect;
+                        continue;
+                    }
                     let tx = self.make_transaction();
                     self.state = State::Collect;
                     self.current_record.clear();
@@ -353,6 +373,94 @@ mod tests {
         let result = iter.next().unwrap();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid TX_ID"));
+    }
+
+    #[test]
+    fn test_parse_text_duplicate_field() {
+        let data = r#"TX_ID: 1
+TX_TYPE: DEPOSIT
+FROM_USER_ID: 0
+TO_USER_ID: 1001
+AMOUNT: 100
+AMOUNT: 200
+TIMESTAMP: 1633036800000
+STATUS: SUCCESS
+DESCRIPTION: "Test"
+"#;
+
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+
+        let result = iter.next().unwrap();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Duplicate field 'AMOUNT'")
+        );
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_file() {
+        let cursor = Box::new(BufReader::new(Cursor::new("")));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_parse_comments_only() {
+        let data = "# just a comment\n# another\n";
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_parse_trailing_blank_lines() {
+        let data = r#"TX_ID: 1
+TX_TYPE: DEPOSIT
+FROM_USER_ID: 0
+TO_USER_ID: 1001
+AMOUNT: 100
+TIMESTAMP: 1633036800000
+STATUS: SUCCESS
+DESCRIPTION: "Test"
+
+
+"#;
+
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+
+        let tx = iter.next().unwrap().unwrap();
+        assert_eq!(tx.id, 1);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_parse_record_without_trailing_blank_line() {
+        let data = r#"TX_ID: 1
+TX_TYPE: DEPOSIT
+FROM_USER_ID: 0
+TO_USER_ID: 1001
+AMOUNT: 100
+TIMESTAMP: 1633036800000
+STATUS: SUCCESS
+DESCRIPTION: "Test""#;
+
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+
+        let tx = iter.next().unwrap().unwrap();
+        assert_eq!(tx.id, 1);
+        assert!(iter.next().is_none());
     }
 
     #[test]

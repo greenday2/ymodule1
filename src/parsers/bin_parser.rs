@@ -20,49 +20,50 @@ impl BinIterator {
         }
     }
 
-    fn read_u32(&self, buffer: &[u8], offset: &mut usize) -> Result<u32> {
-        let bytes = &buffer[*offset..*offset + 4];
-        let res = u32::from_be_bytes(
-            bytes
-                .try_into()
-                .map_err(|e| Error::make_sys_error(Box::new(e), "BinParser::read_u32"))?,
-        );
-        *offset += 4;
-        Ok(res)
-    }
-
-    fn read_u64(&self, buffer: &[u8], offset: &mut usize) -> Result<u64> {
-        let bytes = &buffer[*offset..*offset + 8];
-        let res = u64::from_be_bytes(
-            bytes
-                .try_into()
-                .map_err(|e| Error::make_sys_error(Box::new(e), "BinParser::read_u64"))?,
-        );
-        *offset += 8;
-        Ok(res)
-    }
-
-    fn read_u8(&self, buffer: &[u8], offset: &mut usize) -> Result<u8> {
-        let bytes = &buffer[*offset..*offset + 1];
-        let res = u8::from_be_bytes(
-            bytes
-                .try_into()
-                .map_err(|e| Error::make_sys_error(Box::new(e), "BinParser::read_u8"))?,
-        );
-        *offset += 1;
-        Ok(res)
-    }
-
-    fn read_string(&self, buffer: &[u8], offset: &mut usize, len: u32) -> Result<String> {
-        if len == 0 {
-            return Ok(String::new());
+    fn read_bytes<'a>(buffer: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8]> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| Error::ParseError("Record offset overflow".to_string()))?;
+        if end > buffer.len() {
+            return Err(Error::ParseError(format!(
+                "Truncated record: need {} bytes at offset {}, have {}",
+                len,
+                *offset,
+                buffer.len()
+            )));
         }
+        let bytes = &buffer[*offset..end];
+        *offset = end;
+        Ok(bytes)
+    }
 
-        let bytes = &buffer[*offset..*offset + len as usize];
-        *offset += len as usize;
-        match std::str::from_utf8(bytes) {
-            Ok(s) => Ok(s.to_string()),
-            Err(e) => Err(Error::make_sys_error(Box::new(e), "BinParser::read_string")),
+    fn read_u32(buffer: &[u8], offset: &mut usize) -> Result<u32> {
+        let bytes = Self::read_bytes(buffer, offset, 4)?;
+        Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_u64(buffer: &[u8], offset: &mut usize) -> Result<u64> {
+        let bytes = Self::read_bytes(buffer, offset, 8)?;
+        Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_u8(buffer: &[u8], offset: &mut usize) -> Result<u8> {
+        let bytes = Self::read_bytes(buffer, offset, 1)?;
+        Ok(bytes[0])
+    }
+
+    fn read_string(buffer: &[u8], offset: &mut usize, len: u32) -> Result<String> {
+        let bytes = Self::read_bytes(buffer, offset, len as usize)?;
+        std::str::from_utf8(bytes)
+            .map(|s| s.to_string())
+            .map_err(|e| Error::make_sys_error(Box::new(e), "BinParser::read_string"))
+    }
+
+    fn map_io_error(e: io::Error, context: &str) -> Error {
+        if e.kind() == io::ErrorKind::UnexpectedEof {
+            Error::ParseError(format!("Truncated record: {}", context))
+        } else {
+            Error::make_sys_error(Box::new(e), context)
         }
     }
 
@@ -92,20 +93,20 @@ impl BinIterator {
         let mut buf = [0u8; 4];
         self.reader
             .read_exact(&mut buf)
-            .map_err(|e| Error::make_sys_error(Box::new(e), "BinParser::read::record_size"))?;
+            .map_err(|e| Self::map_io_error(e, "record size"))?;
 
-        let record_size = u32::from_be_bytes(buf);
-        let mut record_buffer = vec![0u8; record_size as usize];
+        let record_size = u32::from_be_bytes(buf) as usize;
+        let mut record_buffer = vec![0u8; record_size];
         self.reader
             .read_exact(&mut record_buffer)
-            .map_err(|e| Error::make_sys_error(Box::new(e), "BinParser::read::record_buffer"))?;
+            .map_err(|e| Self::map_io_error(e, "record body"))?;
         let mut offset = 0_usize;
 
         // TX_ID
-        let tx_id = self.read_u64(&record_buffer, &mut offset)?;
+        let tx_id = Self::read_u64(&record_buffer, &mut offset)?;
 
         // TX_TYPE
-        let tx_type = self.read_u8(&record_buffer, &mut offset)?;
+        let tx_type = Self::read_u8(&record_buffer, &mut offset)?;
         let operation = match tx_type {
             0 => TransactionType::Deposit,
             1 => TransactionType::Transfer,
@@ -114,16 +115,16 @@ impl BinIterator {
         };
 
         // FROM_USER_ID
-        let from_user = self.read_u64(&record_buffer, &mut offset)?;
+        let from_user = Self::read_u64(&record_buffer, &mut offset)?;
         // TO_USER_ID
-        let to_user = self.read_u64(&record_buffer, &mut offset)?;
-        // AMOUNT
-        let amount = self.read_u64(&record_buffer, &mut offset)?;
+        let to_user = Self::read_u64(&record_buffer, &mut offset)?;
+        // AMOUNT (unsigned; sign/direction is conveyed by TX_TYPE, see specs)
+        let amount = Self::read_u64(&record_buffer, &mut offset)?;
         // TIMESTAMP
-        let timestamp = self.read_u64(&record_buffer, &mut offset)?;
+        let timestamp = Self::read_u64(&record_buffer, &mut offset)?;
 
         // STATUS
-        let tx_status = self.read_u8(&record_buffer, &mut offset)?;
+        let tx_status = Self::read_u8(&record_buffer, &mut offset)?;
         let status = match tx_status {
             0 => TransactionStatus::Success,
             1 => TransactionStatus::Failure,
@@ -136,9 +137,16 @@ impl BinIterator {
             }
         };
 
-        // DESCRIBE
-        let description_len = self.read_u32(&record_buffer, &mut offset)?;
-        let description = self.read_string(&record_buffer, &mut offset, description_len)?;
+        // DESCRIPTION
+        let description_len = Self::read_u32(&record_buffer, &mut offset)?;
+        let description = Self::read_string(&record_buffer, &mut offset, description_len)?;
+
+        if offset != record_size {
+            return Err(Error::ParseError(format!(
+                "Record size mismatch: declared {}, consumed {}",
+                record_size, offset
+            )));
+        }
 
         Ok(Some(Transaction::new(
             tx_id,
@@ -371,5 +379,98 @@ mod tests {
         assert!(!BinParser::detect(b"Some random text"));
         assert!(!BinParser::detect(b""));
         assert!(!BinParser::detect(b"YPB"));
+    }
+
+    fn parse_first(data: Vec<u8>) -> Result<Transaction> {
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = BinParser;
+        let mut iter = parser.parse(cursor).unwrap();
+        iter.next().unwrap()
+    }
+
+    #[test]
+    fn test_truncated_record_body() {
+        // MAGIC + RECORD_SIZE claiming 100 bytes, but almost no body follows
+        let mut data = Vec::new();
+        data.extend_from_slice(b"YPBN");
+        data.extend_from_slice(&100u32.to_be_bytes());
+        data.extend_from_slice(&[0u8; 10]);
+
+        let err = parse_first(data).unwrap_err();
+        assert!(
+            err.to_string().contains("Truncated record"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_record_size_too_small() {
+        // RECORD_SIZE smaller than fixed fields require (~45 bytes without description)
+        let mut data = Vec::new();
+        data.extend_from_slice(b"YPBN");
+        data.extend_from_slice(&8u32.to_be_bytes());
+        data.extend_from_slice(&[0u8; 8]);
+
+        let err = parse_first(data).unwrap_err();
+        assert!(
+            err.to_string().contains("Truncated record"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_record_size_too_large_trailing_bytes() {
+        let tx = Transaction::new(
+            1,
+            TransactionType::Deposit,
+            0,
+            1001,
+            50000,
+            1672531200000,
+            TransactionStatus::Success,
+            "ok".to_string(),
+        );
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&tx.id.to_be_bytes());
+        body.extend_from_slice(&0u8.to_be_bytes());
+        body.extend_from_slice(&tx.from_user.to_be_bytes());
+        body.extend_from_slice(&tx.to_user.to_be_bytes());
+        body.extend_from_slice(&tx.amount.to_be_bytes());
+        body.extend_from_slice(&tx.timestamp.to_be_bytes());
+        body.extend_from_slice(&0u8.to_be_bytes());
+        let desc_bytes = tx.description.as_bytes();
+        body.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
+        body.extend_from_slice(desc_bytes);
+        // Extra trailing bytes inside declared record size
+        body.extend_from_slice(&[0xAA, 0xBB]);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"YPBN");
+        data.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        data.extend_from_slice(&body);
+
+        let err = parse_first(data).unwrap_err();
+        assert!(
+            err.to_string().contains("Record size mismatch"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_invalid_magic_in_stream() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"XXXX");
+        data.extend_from_slice(&0u32.to_be_bytes());
+
+        let err = parse_first(data).unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid MAGIC"),
+            "unexpected error: {}",
+            err
+        );
     }
 }
