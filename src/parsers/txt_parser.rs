@@ -70,7 +70,7 @@ impl TxtIterator {
         let description = self
             .current_record
             .get("DESCRIPTION")
-            .ok_or_else(|| Error::ParseError("Missing STATUS field".to_string()))?;
+            .ok_or_else(|| Error::ParseError("Missing DESCRIPTION field".to_string()))?;
 
         // Парсим значения
         let tx_id: u64 = tx_id_str

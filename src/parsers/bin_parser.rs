@@ -128,7 +128,12 @@ impl BinIterator {
             0 => TransactionStatus::Success,
             1 => TransactionStatus::Failure,
             2 => TransactionStatus::Pending,
-            _ => return Err(Error::ParseError(format!("Invalid TX_TYPE: {}", tx_type))),
+            _ => {
+                return Err(Error::ParseError(format!(
+                    "Invalid TX_STATUS: {}",
+                    tx_status
+                )));
+            }
         };
 
         // DESCRIBE
