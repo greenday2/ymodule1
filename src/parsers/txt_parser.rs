@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead};
 
-use super::transaction::{Transaction, TransactionStatus, TransactionType};
+use super::transaction::{
+    Transaction, TransactionStatus, TransactionType, format_quoted_description,
+    parse_quoted_description,
+};
 use crate::parsers::{FormatDetector, TransactionParser, TransactionSerializer};
 use crate::{Error, Result};
 
@@ -67,10 +70,11 @@ impl TxtIterator {
             .get("STATUS")
             .ok_or_else(|| Error::ParseError("Missing STATUS field".to_string()))?;
 
-        let description = self
-            .current_record
-            .get("DESCRIPTION")
-            .ok_or_else(|| Error::ParseError("Missing DESCRIPTION field".to_string()))?;
+        let description = parse_quoted_description(
+            self.current_record
+                .get("DESCRIPTION")
+                .ok_or_else(|| Error::ParseError("Missing DESCRIPTION field".to_string()))?,
+        )?;
 
         // Парсим значения
         let tx_id: u64 = tx_id_str
@@ -108,22 +112,26 @@ impl TxtIterator {
             amount,
             timestamp,
             status,
-            description.clone(),
+            description,
         ))
     }
 
     fn parse_line(&mut self, line: &str) -> Result<()> {
-        if let Some((fld_name, fld_value)) = line.split_once(':') {
-            let fld_name = fld_name.trim().to_string();
-            if self.current_record.contains_key(&fld_name) {
-                return Err(Error::ParseError(format!(
-                    "Duplicate field '{}'",
-                    fld_name
-                )));
-            }
-            self.current_record
-                .insert(fld_name, fld_value.trim().to_string());
+        let Some((fld_name, fld_value)) = line.split_once(':') else {
+            return Err(Error::ParseError(format!(
+                "Invalid line (expected KEY: VALUE): {}",
+                line
+            )));
+        };
+        let fld_name = fld_name.trim().to_string();
+        if self.current_record.contains_key(&fld_name) {
+            return Err(Error::ParseError(format!(
+                "Duplicate field '{}'",
+                fld_name
+            )));
         }
+        self.current_record
+            .insert(fld_name, fld_value.trim().to_string());
         Ok(())
     }
 }
@@ -143,12 +151,12 @@ impl Iterator for TxtIterator {
                         match line {
                             Err(e) => break Some(Err(e)),
                             Ok(line) => {
-                                if line.is_empty() {
+                                if line.trim().is_empty() {
                                     self.state = State::Save;
                                     continue;
                                 }
 
-                                if line.starts_with('#') {
+                                if line.trim_start().starts_with('#') {
                                     continue;
                                 }
 
@@ -249,7 +257,7 @@ impl TransactionSerializer for TxtSerializer {
                 .map_err(|e| Error::make_sys_error(Box::new(e), "TxtSerializer"))?;
             writeln!(writer, "STATUS: {}", tx.status)
                 .map_err(|e| Error::make_sys_error(Box::new(e), "TxtSerializer"))?;
-            writeln!(writer, "DESCRIPTION: {}", tx.description)
+            writeln!(writer, "DESCRIPTION: {}", format_quoted_description(&tx.description))
                 .map_err(|e| Error::make_sys_error(Box::new(e), "TxtSerializer"))?;
         }
 
@@ -308,7 +316,7 @@ mod tests {
         assert_eq!(tx1.amount, 10000);
         assert_eq!(tx1.timestamp, 1633036800000);
         assert_eq!(tx1.status, TransactionStatus::Success);
-        assert_eq!(tx1.description, "\"Terminal deposit\"");
+        assert_eq!(tx1.description, "Terminal deposit");
 
         let tx2 = iter.next().unwrap().unwrap();
         assert_eq!(tx2.id, 2312321321321321);
@@ -318,7 +326,7 @@ mod tests {
         assert_eq!(tx2.amount, 1000);
         assert_eq!(tx2.timestamp, 1633056800000);
         assert_eq!(tx2.status, TransactionStatus::Failure);
-        assert_eq!(tx2.description, "\"User transfer\"");
+        assert_eq!(tx2.description, "User transfer");
 
         let tx3 = iter.next().unwrap().unwrap();
         assert_eq!(tx3.id, 3213213213213213);
@@ -328,7 +336,7 @@ mod tests {
         assert_eq!(tx3.amount, 100);
         assert_eq!(tx3.timestamp, 1633066800000);
         assert_eq!(tx3.status, TransactionStatus::Success);
-        assert_eq!(tx3.description, "\"User withdrawal\"");
+        assert_eq!(tx3.description, "User withdrawal");
 
         assert!(iter.next().is_none());
     }
@@ -473,7 +481,7 @@ DESCRIPTION: "Test""#;
             10000,
             1633036800000,
             TransactionStatus::Success,
-            "\"Terminal deposit\"".to_string(),
+            "Terminal deposit".to_string(),
         );
 
         let tx2 = Transaction::new(
@@ -484,7 +492,7 @@ DESCRIPTION: "Test""#;
             1000,
             1633056800000,
             TransactionStatus::Failure,
-            "\"User transfer\"".to_string(),
+            "User transfer".to_string(),
         );
 
         let mut output = Vec::new();
@@ -517,6 +525,79 @@ DESCRIPTION: "User transfer"
 "#;
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_text_unquoted_description() {
+        let data = r#"TX_ID: 1
+TX_TYPE: DEPOSIT
+FROM_USER_ID: 0
+TO_USER_ID: 1001
+AMOUNT: 100
+TIMESTAMP: 1633036800000
+STATUS: SUCCESS
+DESCRIPTION: Test without quotes
+"#;
+
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+
+        let result = iter.next().unwrap();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("DESCRIPTION must be enclosed in double quotes")
+        );
+    }
+
+    #[test]
+    fn test_parse_text_line_without_colon() {
+        let data = r#"TX_ID: 1
+not a field line
+TX_TYPE: DEPOSIT
+"#;
+
+        let cursor = Box::new(BufReader::new(Cursor::new(data)));
+        let parser = TxtParser;
+        let mut iter = parser.parse(cursor).unwrap();
+
+        let result = iter.next().unwrap();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expected KEY: VALUE")
+        );
+    }
+
+    #[test]
+    fn test_txt_roundtrip_description_with_quotes() {
+        let tx = Transaction::new(
+            1,
+            TransactionType::Deposit,
+            0,
+            1001,
+            100,
+            1,
+            TransactionStatus::Success,
+            r#"He said "hi""#.to_string(),
+        );
+
+        let mut output = Vec::new();
+        let mut iter = vec![Ok(tx.clone())].into_iter();
+        let iter_ref: &mut dyn Iterator<Item = Result<Transaction>> = &mut iter;
+        TxtSerializer
+            .serialize(&mut output, iter_ref)
+            .unwrap();
+
+        let cursor = Box::new(BufReader::new(Cursor::new(output)));
+        let parsed = TxtParser.parse(cursor).unwrap().next().unwrap().unwrap();
+        assert_eq!(parsed.description, tx.description);
+        assert!(parsed.diff(&tx).is_none());
     }
 
     #[test]

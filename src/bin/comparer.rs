@@ -53,6 +53,7 @@ where
     I1: Iterator<Item = Result<Transaction>>,
     I2: Iterator<Item = Result<Transaction>>,
 {
+    let mut index = 0usize;
     loop {
         let tx1 = iter1.next();
         let tx2 = iter2.next();
@@ -64,35 +65,36 @@ where
             }
             (None, Some(Ok(_))) => {
                 return Err(Error::ParseError(format!(
-                    "{} has extra transactions",
-                    file2_path,
+                    "{} has extra transaction at index {}",
+                    file2_path, index
                 )));
             }
             (Some(Ok(_)), None) => {
                 return Err(Error::ParseError(format!(
-                    "{} has extra transaction at line",
-                    file1_path,
+                    "{} has extra transaction at index {}",
+                    file1_path, index
                 )));
             }
             (Some(Err(e)), Some(_) | None) => {
                 return Err(Error::ParseError(format!(
-                    "Error reading from {}: {}",
-                    file1_path, e
+                    "Error reading from {} at index {}: {}",
+                    file1_path, index, e
                 )));
             }
             (Some(_) | None, Some(Err(e))) => {
                 return Err(Error::ParseError(format!(
-                    "Error reading from {}: {}",
-                    file2_path, e
+                    "Error reading from {} at index {}: {}",
+                    file2_path, index, e
                 )));
             }
             (Some(Ok(tx1)), Some(Ok(tx2))) => {
                 if let Some(diff_description) = tx1.diff(&tx2) {
                     return Err(Error::ParseError(format!(
-                        "Transactions arent match! The difference is: {}",
-                        diff_description,
+                        "Transactions at index {} don't match: {}",
+                        index, diff_description,
                     )));
                 }
+                index += 1;
             }
         }
     }

@@ -25,7 +25,26 @@ pub struct Transaction {
     pub amount: u64,
     pub timestamp: u64,
     pub status: TransactionStatus,
+    /// Plain text without surrounding quotes. TXT/CSV wrappers are format-level only.
     pub description: String,
+}
+
+/// Strip surrounding double quotes and unescape `""` → `"`.
+pub fn parse_quoted_description(raw: &str) -> Result<String> {
+    let raw = raw.trim();
+    if raw.len() < 2 || !raw.starts_with('"') || !raw.ends_with('"') {
+        return Err(Error::ParseError(format!(
+            "DESCRIPTION must be enclosed in double quotes, got: {}",
+            raw
+        )));
+    }
+    let inner = &raw[1..raw.len() - 1];
+    Ok(inner.replace("\"\"", "\""))
+}
+
+/// Wrap description in double quotes, escaping `"` as `""`.
+pub fn format_quoted_description(description: &str) -> String {
+    format!("\"{}\"", description.replace('"', "\"\""))
 }
 
 impl Transaction {

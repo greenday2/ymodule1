@@ -29,16 +29,16 @@ fn run() -> Result<()> {
 
     let input_format = Format::detect_from_content(&mut input_data)?;
 
-    let output_data: &mut dyn Write = if let Some(path) = &cmd_args.output_file {
-        &mut File::create(path).map_err(|e| Error::make_sys_error(Box::new(e), path))?
+    let mut output_data: Box<dyn Write> = if let Some(path) = &cmd_args.output_file {
+        Box::new(File::create(path).map_err(|e| Error::make_sys_error(Box::new(e), path))?)
     } else {
-        &mut io::stdout().lock()
+        Box::new(io::stdout().lock())
     };
 
     let parser = get_parser(input_format);
     let serializer = get_serializer(output_format);
     let mut tx_iter = parser.parse(input_data)?;
-    serializer.serialize(output_data, &mut tx_iter)?;
+    serializer.serialize(&mut *output_data, &mut tx_iter)?;
 
     Ok(())
 }

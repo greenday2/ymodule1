@@ -39,7 +39,7 @@ impl CliArgs {
                     cli_args.help = true;
                 }
                 _ => {
-                    return Err(Error::UnknownArgument(format!("Unknow argument: {}", arg)));
+                    return Err(Error::UnknownArgument(format!("Unknown argument: {}", arg)));
                 }
             }
         }
@@ -57,7 +57,7 @@ impl CliArgs {
 pub fn print_help() {
     println!(
         r#"
-Usage: converer OPTIONS
+Usage: converter OPTIONS
 
     Options:
       --help   Show this help message
